@@ -1,0 +1,5 @@
+
+config XENO_DRIVERS_ANALOGY_CB_PCIDAS
+	depends on XENO_DRIVERS_ANALOGY
+	tristate "Measurement Computing PCIDAS Driver"
+	default n
