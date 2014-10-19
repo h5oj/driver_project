@@ -23,6 +23,46 @@ struct cb_pcidas_struct {
   struct pci_dev *pcidev;
 };
 
+/****************************************************************************/
+/* AMCC Operation Register Offsets - PCI                                    */
+/****************************************************************************/
+
+#define AMCC_OP_REG_OMB1         0x00
+#define AMCC_OP_REG_OMB2         0x04
+#define AMCC_OP_REG_OMB3         0x08
+#define AMCC_OP_REG_OMB4         0x0c
+#define AMCC_OP_REG_IMB1         0x10
+#define AMCC_OP_REG_IMB2         0x14
+#define AMCC_OP_REG_IMB3         0x18
+#define AMCC_OP_REG_IMB4         0x1c
+#define AMCC_OP_REG_FIFO         0x20
+#define AMCC_OP_REG_MWAR         0x24
+#define AMCC_OP_REG_MWTC         0x28
+#define AMCC_OP_REG_MRAR         0x2c
+#define AMCC_OP_REG_MRTC         0x30
+#define AMCC_OP_REG_MBEF         0x34
+#define AMCC_OP_REG_INTCSR       0x38
+#define  AMCC_OP_REG_INTCSR_SRC  (AMCC_OP_REG_INTCSR + 2)	/* INT source */
+#define  AMCC_OP_REG_INTCSR_FEC  (AMCC_OP_REG_INTCSR + 3)	/* FIFO ctrl */
+#define AMCC_OP_REG_MCSR         0x3c
+#define  AMCC_OP_REG_MCSR_NVDATA (AMCC_OP_REG_MCSR + 2)	/* Data in byte 2 */
+#define  AMCC_OP_REG_MCSR_NVCMD  (AMCC_OP_REG_MCSR + 3)	/* Command in byte 3 */
+
+#define AMCC_FIFO_DEPTH_DWORD	8
+#define AMCC_FIFO_DEPTH_BYTES	(8 * sizeof (u32))
+
+/****************************************************************************/
+/* AMCC - PCI Interrupt Control/Status Register                            */
+/****************************************************************************/
+#define INTCSR_OUTBOX_BYTE(x)	((x) & 0x3)
+#define INTCSR_OUTBOX_SELECT(x)	(((x) & 0x3) << 2)
+#define INTCSR_OUTBOX_EMPTY_INT	0x10	/*  enable outbox empty interrupt */
+#define INTCSR_INBOX_BYTE(x)	(((x) & 0x3) << 8)
+#define INTCSR_INBOX_SELECT(x)	(((x) & 0x3) << 10)
+#define INTCSR_INBOX_FULL_INT	0x1000	/*  enable inbox full interrupt */
+#define INTCSR_INBOX_INTR_STATUS	0x20000	/*  read, or write clear inbox full interrupt */
+#define INTCSR_INTR_ASSERTED	0x800000	/*  read only, interrupt asserted */
+
 /* range stuff */
 
 #define CRANGE(a, b)		{(a)*1e6, (b)*1e6, 0}
@@ -135,7 +175,7 @@ static inline unsigned int DAC_CHAN_EN(unsigned int channel)
 /* analog output registers for 100x, 1200 series */
 static inline unsigned int DAC_DATA_REG(unsigned int channel)
 {
-	return 2 * (channel & 0x1);
+    return 2 * (channel & 0x1);
 }
 
 /* analog output registers for 1602 series*/
@@ -144,54 +184,60 @@ static inline unsigned int DAC_DATA_REG(unsigned int channel)
 
 #define IS_UNIPOLAR		0x4	/* unipolar range mask */
 
+#if 0
 struct comedi_krange {
-	int min;	/* fixed point, multiply by 1e-6 */
+    int min;	/* fixed point, multiply by 1e-6 */
 	int max;	/* fixed point, multiply by 1e-6 */
-	unsigned int flags;
+    unsigned int flags;
 };
 
 struct comedi_lrange {
-	int length;
-	struct comedi_krange range[GCC_ZERO_LENGTH_ARRAY];
+    int length;
+    struct comedi_krange range[GCC_ZERO_LENGTH_ARRAY];
 };
+#endif
+
+#define CB_PCIDAS_AI_RANGE_IDX 0
+#define CB_PCIDAS_AO_RANGE_IDX 2
 
 /* analog input ranges for most boards */
-static const struct comedi_lrange cb_pcidas_ranges = {
-	8, {
-		CBIP_RANGE(10),
-		CBIP_RANGE(5),
-		CBIP_RANGE(2.5),
-		CBIP_RANGE(1.25),
-		CUNI_RANGE(10),
-		CUNI_RANGE(5),
-		CUNI_RANGE(2.5),
-		CUNI_RANGE(1.25)
-	}
-};
+struct a4l_rngtab cb_pcidas_ai_ranges = {
+length: 8, 
+    rngs: {
+RANGE_V(-10,10),
+    RANGE_V(-5,5),
+    RANGE_V(-2.5,2.5),
+    RANGE_V(-1.25,1.25),
+    RANGE_V(0,10),
+    RANGE_V(0,5),
+    RANGE_V(0,2.5),
+    RANGE_V(0,1.25),
+    }
+    };
 
 /* pci-das1001 input ranges */
-static const struct comedi_lrange cb_pcidas_alt_ranges = {
-	8, {
-		CBIP_RANGE(10),
-		CBIP_RANGE(1),
-		CBIP_RANGE(0.1),
-		CBIP_RANGE(0.01),
-		CUNI_RANGE(10),
-		CUNI_RANGE(1),
-		CUNI_RANGE(0.1),
-		CUNI_RANGE(0.01)
-	}
-};
+struct a4l_rngtab cb_pcidas_alt_ranges = {8, {
+RANGE_V(-10,10),
+    RANGE_V(-1,1),
+    RANGE_V(-0.1,0.1),
+    RANGE_V(-0.01,0.01),
+    RANGE_V(0,10),
+    RANGE_V(0,1),
+    RANGE_V(0,0.1),
+    RANGE_V(0,0.01),
+}};
 
 /* analog output ranges */
-static const struct comedi_lrange cb_pcidas_ao_ranges = {
-	4, {
-		CBIP_RANGE(5),
-		CBIP_RANGE(10),
-		CUNI_RANGE(5),
-		CUNI_RANGE(10)
-	}
-};
+struct a4l_rngtab cb_pcidas_ao_ranges = {4, {
+    RANGE_V(-5,5),
+    RANGE_V(-10,10),
+    RANGE_V(0,5),
+    RANGE_V(0,10),
+}};
+
+struct a4l_rngdesc cb_pcidas_range_ai_table = RNG_GLOBAL(cb_pcidas_ai_ranges);
+struct a4l_rngdesc cb_pcidas_range_alt_table = RNG_GLOBAL(cb_pcidas_alt_ranges);
+struct a4l_rngdesc cb_pcidas_range_ao_table = RNG_GLOBAL(cb_pcidas_ao_ranges);
 
 enum trimpot_model {
 	AD7376,
@@ -199,37 +245,41 @@ enum trimpot_model {
 };
 
 struct cb_pcidas_board {
-  const char *name;
-  const int device_id;  /*  PCI Device ID */
-  int ai_nchan;		/*  Inputs in single-ended mode */
-  int ai_bits;		/*  analog input resolution */
-  int ai_speed;		/*  fastest conversion period in ns */
-  int ao_nchan;		/*  number of analog out channels */
-  int has_ao_fifo;	/*  analog output has fifo */
-  int ao_scan_speed;	/*  analog output scan speed for 1602 series */
-  int fifo_size;		/*  number of samples fifo can hold */
-  const struct comedi_lrange *ranges;
-  enum trimpot_model trimpot;
-  unsigned has_dac08:1;
-  unsigned is_1602:1;
+char *name;
+int device_id;  /*  PCI Device ID */
+int ai_nchan;		/*  Inputs in single-ended mode */
+int ai_bits;		/*  analog input resolution */
+int ai_speed;		/*  fastest conversion period in ns */
+int ao_nchan;		/*  number of analog out channels */
+int ao_bits;
+int has_ao_fifo;	/*  analog output has fifo */
+int ao_scan_speed;	/*  analog output scan speed for 1602 series */
+int fifo_size;		/*  number of samples fifo can hold */
+struct a4l_rngdesc *ranges_ao;
+struct a4l_rngdesc *ranges_ai;
+enum trimpot_model trimpot;
+unsigned has_dac08:1;
+unsigned is_1602:1;
 };
 
 
-static const struct cb_pcidas_board cb_pcidas_boards[] = {
+static struct cb_pcidas_board cb_pcidas_boards[] = {
   {
-		.name		= "pci-das1602/16",
-		.device_id      = 0x0001,
-		.ai_nchan	= 16,
-		.ai_bits	= 16,
-		.ai_speed	= 5000,
-		.ao_nchan	= 2,
-		.has_ao_fifo	= 1,
-		.ao_scan_speed	= 10000,
-		.fifo_size	= 512,
-		.ranges		= &cb_pcidas_ranges,
-		.trimpot	= AD8402,
-		.has_dac08	= 1,
-		.is_1602	= 1,
+.name		= "pci-das1602/16",
+     .device_id         = 0x0001,
+     .ai_nchan	        = 16,
+     .ai_bits	        = 16,
+     .ai_speed	        = 5000,
+     .ao_nchan	        = 2,
+     .ao_bits           = 16,
+     .has_ao_fifo	= 1,
+     .ao_scan_speed	= 10000,
+     .fifo_size	        = 512,
+     .ranges_ao	        = &(cb_pcidas_range_ai_table),
+     .ranges_ai         = &(cb_pcidas_range_ao_table),
+     .trimpot	        = AD8402,
+     .has_dac08	        = 1,
+     .is_1602	        = 1,
 	},
   {
 		.name		= "pci-das1200",
@@ -239,7 +289,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ai_speed	= 3200,
 		.ao_nchan	= 2,
 		.fifo_size	= 1024,
-		.ranges		= &cb_pcidas_ranges,
+		 //.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
 	},
   {
@@ -252,7 +302,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.has_ao_fifo	= 1,
 		.ao_scan_speed	= 4000,
 		.fifo_size	= 1024,
-		.ranges		= &cb_pcidas_ranges,
+		 //.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
 		.is_1602	= 1,
 	},
@@ -263,7 +313,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ai_bits	= 12,
 		.ai_speed	= 3200,
 		.fifo_size	= 1024,
-		.ranges		= &cb_pcidas_ranges,
+		 //.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
 	},
   {
@@ -273,7 +323,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ai_bits	= 16,
 		.ai_speed	= 5000,
 		.fifo_size	= 512,
-		.ranges		= &cb_pcidas_ranges,
+		 //.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD8402,
 		.has_dac08	= 1,
 		.is_1602	= 1,
@@ -285,7 +335,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ai_bits	= 12,
 		.ai_speed	= 4000,
 		.fifo_size	= 1024,
-		.ranges		= &cb_pcidas_ranges,
+		 //.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
 	},
   {
@@ -296,7 +346,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ai_speed	= 6800,
 		.ao_nchan	= 2,
 		.fifo_size	= 1024,
-		.ranges		= &cb_pcidas_alt_ranges,
+		 //.ranges		= &cb_pcidas_alt_ranges,
 		.trimpot	= AD7376,
 	},
   {
@@ -307,7 +357,7 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ai_speed	= 6800,
 		.ao_nchan	= 2,
 		.fifo_size	= 1024,
-		.ranges		= &cb_pcidas_ranges,
+		 //.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
 	},
 };

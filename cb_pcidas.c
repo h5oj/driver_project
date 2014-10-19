@@ -1,5 +1,5 @@
 /*
- * Analogy driver for Sensoray Model 526 board
+ * Analogy driver for Measurement Computing Boards
  *
  * Copyright (C) 2009 Simon Boulay <simon.boulay@gmail.com>
  *
@@ -157,9 +157,27 @@ struct s526GPCTConfig {
 };
 
 typedef struct cb_pcidas_priv {
-  unsigned long io_base;
-  struct cb_pcidas_struct *cb;
-  struct cb_pcidas_board *board;  
+    unsigned long io_base;
+    struct cb_pcidas_struct *cb;
+    struct cb_pcidas_board *board;  
+    /* base addresses */
+    unsigned long s5933_config;
+    unsigned long control_status;
+    unsigned long adc_fifo;
+    unsigned long pacer_counter_dio;
+    unsigned long ao_registers;
+    /* divisors of master clock for analog input pacing */
+    unsigned int divisor1;
+    unsigned int divisor2;
+    /* number of analog input samples remaining */
+    unsigned int count;
+    /* bits to write to registers */
+    unsigned int adc_fifo_bits;
+    unsigned int s5933_intcsr_bits;
+    unsigned int ao_control_bits;
+    /* read and write subdevices */
+    struct a4l_subdevice *write_subdev;
+    struct a4l_subdevice *read_subdev;
 } cb_pcidas_priv_t;
 
 /*
@@ -548,7 +566,7 @@ static int s526_ao_rinsn(struct a4l_subdevice *subd, struct a4l_kernel_instructi
 static int cb_pcidas_dio_insn_config(struct a4l_subdevice *subd, struct a4l_kernel_instruction *insn)
 {
 	struct a4l_device *dev = subd->dev;
-	struct cb_pcidas_subd_dio_priv *subdpriv = (struct cb_pcidas_subd_dio_priv *)subd->priv;
+	//struct cb_pcidas_subd_dio_priv *subdpriv = (struct cb_pcidas_subd_dio_priv *)subd->priv;
 	unsigned int *data = (unsigned int *)insn->data;
 	int chan = CR_CHAN(insn->chan_desc);
 	int mask, mask_config, config;
@@ -592,8 +610,7 @@ static int cb_pcidas_dio_insn_config(struct a4l_subdevice *subd, struct a4l_kern
 static int cb_pcidas_dio_insn_bits(struct a4l_subdevice *subd, struct a4l_kernel_instruction *insn)
 {
 	struct a4l_device *dev = subd->dev;
-	struct cb_pcidas_subd_dio_priv *subdpriv =
-	  (struct cb_pcidas_subd_dio_priv *)subd->priv;
+	//struct cb_pcidas_subd_dio_priv *subdpriv = (struct cb_pcidas_subd_dio_priv *)subd->priv;
 	uint8_t *data = (uint8_t *)insn->data;
 	/* Not finished - needs to be completed */
 #if 0
@@ -632,7 +649,7 @@ static struct a4l_channels_desc s526_chan_desc_ai = {
 	},
 };
 
-static struct a4l_channels_desc s526_chan_desc_ao = {
+static struct a4l_channels_desc cb_pcidas_chan_desc_ao = {
 	.mode = A4L_CHAN_GLOBAL_CHANDESC,
 	.length = S526_AO_CHANS,
 	.chans = {
@@ -670,7 +687,8 @@ static void setup_subd_ai(struct a4l_subdevice *subd)
 	subd->insn_config = s526_ai_insn_config;
 }*/
 
-/* Analog output subdevice 
+/* Analog output subdevice */
+#if 0
 static void setup_subd_ao(struct a4l_subdevice *subd)
 {
 	subd->flags = A4L_SUBD_AO;
@@ -678,7 +696,8 @@ static void setup_subd_ao(struct a4l_subdevice *subd)
 	subd->rng_desc = &a4l_range_bipolar10;
 	subd->insn_write = s526_ao_winsn;
 	subd->insn_read = s526_ao_rinsn;
-}*/
+}
+#endif
 
 /* Digital i/o subdevice */
 static void setup_subd_dio(struct a4l_subdevice *subd)
@@ -715,6 +734,176 @@ static struct setup_subd setup_subds[4] = {
 	},
 };
 
+#if 0
+static void handle_ao_interrupt(struct a4l_device *dev, unsigned int status)
+{
+	const struct cb_pcidas_board *thisboard = devpriv->board;
+	struct comedi_subdevice *s = dev->write_subdev;
+	struct comedi_async *async = s->async;
+	struct comedi_cmd *cmd = &async->cmd;
+	unsigned int half_fifo = thisboard->fifo_size / 2;
+	unsigned int num_points;
+	unsigned long flags;
+
+	async->events = 0;
+
+	if (status & DAEMI) {
+		/*  clear dac empty interrupt latch */
+		spin_lock_irqsave(&dev->spinlock, flags);
+		outw(devpriv->adc_fifo_bits | DAEMI,
+		     devpriv->control_status + INT_ADCFIFO);
+		spin_unlock_irqrestore(&dev->spinlock, flags);
+		if (inw(devpriv->ao_registers + DAC_CSR) & DAC_EMPTY) {
+			if (cmd->stop_src == TRIG_NONE ||
+			    (cmd->stop_src == TRIG_COUNT
+			     && devpriv->ao_count)) {
+				comedi_error(dev, "dac fifo underflow");
+				cb_pcidas_ao_cancel(dev, s);
+				async->events |= COMEDI_CB_ERROR;
+			}
+			async->events |= COMEDI_CB_EOA;
+		}
+	} else if (status & DAHFI) {
+		unsigned int num_bytes;
+
+		/*  figure out how many points we are writing to fifo */
+		num_points = half_fifo;
+		if (cmd->stop_src == TRIG_COUNT &&
+		    devpriv->ao_count < num_points)
+			num_points = devpriv->ao_count;
+		num_bytes =
+		    cfc_read_array_from_buffer(s, devpriv->ao_buffer,
+					       num_points * sizeof(short));
+		num_points = num_bytes / sizeof(short);
+
+		if (async->cmd.stop_src == TRIG_COUNT)
+			devpriv->ao_count -= num_points;
+		/*  write data to board's fifo */
+		outsw(devpriv->ao_registers + DACDATA, devpriv->ao_buffer,
+		      num_points);
+		/*  clear half-full interrupt latch */
+		spin_lock_irqsave(&dev->spinlock, flags);
+		outw(devpriv->adc_fifo_bits | DAHFI,
+		     devpriv->control_status + INT_ADCFIFO);
+		spin_unlock_irqrestore(&dev->spinlock, flags);
+	}
+
+	comedi_event(dev, s);
+}
+#endif
+
+int cb_pcidas_interrupt(unsigned int irq, void *d)
+{
+    struct a4l_device *dev = (struct a4l_device *)d;
+    //struct cb_pcidas_board *thisboard = devpriv->board;
+    //struct cb_pcidas_private *devpriv = dev->private;
+    
+    //struct comedi_subdevice *s = dev->read_subdev;
+    //struct comedi_async *async;
+    int status, s5933_status;
+    //int half_fifo = thisboard->fifo_size / 2;
+    //unsigned int num_samples, i;
+    //static const int timeout = 10000;
+    //unsigned long flags;
+    
+#if 0    
+    if (!dev->attached) {
+	return IRQ_NONE;
+    }
+#endif
+    
+    s5933_status = inl(devpriv->s5933_config + AMCC_OP_REG_INTCSR);
+    
+    if ((INTCSR_INTR_ASSERTED & s5933_status) == 0) {
+	return IRQ_NONE;
+    }
+    
+    /*  make sure mailbox 4 is empty */
+    inl_p(devpriv->s5933_config + AMCC_OP_REG_IMB4);
+    /*  clear interrupt on amcc s5933 */
+    outl(devpriv->s5933_intcsr_bits | INTCSR_INBOX_INTR_STATUS,
+	 devpriv->s5933_config + AMCC_OP_REG_INTCSR);
+    
+    status = inw(devpriv->control_status + INT_ADCFIFO);
+    
+    /*  check for analog output interrupt */
+    if (status & (DAHFI | DAEMI)) {
+	//handle_ao_interrupt(dev, status);
+    }
+    
+#if 0	
+    async = s->async;
+    async->events = 0;
+    /*  check for analog input interrupts */
+    /*  if fifo half-full */
+    if (status & ADHFI) {
+	/*  read data */
+	num_samples = half_fifo;
+	if (async->cmd.stop_src == TRIG_COUNT &&
+	    num_samples > devpriv->count) {
+	    num_samples = devpriv->count;
+	}
+	insw(devpriv->adc_fifo + ADCDATA, devpriv->ai_buffer,
+	     num_samples);
+	cfc_write_array_to_buffer(s, devpriv->ai_buffer,
+				  num_samples * sizeof(short));
+	devpriv->count -= num_samples;
+	if (async->cmd.stop_src == TRIG_COUNT && devpriv->count == 0) {
+	    async->events |= COMEDI_CB_EOA;
+	    cb_pcidas_cancel(dev, s);
+	}
+	/*  clear half-full interrupt latch */
+	spin_lock_irqsave(&dev->spinlock, flags);
+	outw(devpriv->adc_fifo_bits | INT,
+	     devpriv->control_status + INT_ADCFIFO);
+	spin_unlock_irqrestore(&dev->spinlock, flags);
+	/*  else if fifo not empty */
+    } else if (status & (ADNEI | EOBI)) {
+	for (i = 0; i < timeout; i++) {
+	    /*  break if fifo is empty */
+	    if ((ADNE & inw(devpriv->control_status +
+			    INT_ADCFIFO)) == 0)
+		break;
+	    cfc_write_to_buffer(s, inw(devpriv->adc_fifo));
+	    if (async->cmd.stop_src == TRIG_COUNT &&
+		--devpriv->count == 0) {
+		/* end of acquisition */
+		cb_pcidas_cancel(dev, s);
+		async->events |= COMEDI_CB_EOA;
+		break;
+	    }
+	}
+	/*  clear not-empty interrupt latch */
+	spin_lock_irqsave(&dev->spinlock, flags);
+	outw(devpriv->adc_fifo_bits | INT,
+	     devpriv->control_status + INT_ADCFIFO);
+	spin_unlock_irqrestore(&dev->spinlock, flags);
+    } else if (status & EOAI) {
+	comedi_error(dev,
+		     "bug! encountered end of acquisition interrupt?");
+	/*  clear EOA interrupt latch */
+	spin_lock_irqsave(&dev->spinlock, flags);
+	outw(devpriv->adc_fifo_bits | EOAI,
+	     devpriv->control_status + INT_ADCFIFO);
+	spin_unlock_irqrestore(&dev->spinlock, flags);
+    }
+    /* check for fifo overflow */
+    if (status & LADFUL) {
+	comedi_error(dev, "fifo overflow");
+	/*  clear overflow interrupt latch */
+	spin_lock_irqsave(&dev->spinlock, flags);
+	outw(devpriv->adc_fifo_bits | LADFUL,
+	     devpriv->control_status + INT_ADCFIFO);
+	spin_unlock_irqrestore(&dev->spinlock, flags);
+	cb_pcidas_cancel(dev, s);
+	async->events |= COMEDI_CB_EOA | COMEDI_CB_ERROR;
+    }
+    
+    comedi_event(dev, s);
+#endif
+    return IRQ_HANDLED;
+}
+
 int dev_cb_pcidas_device_intable(struct pci_dev *pcidev)
 {
   int i, ret = -1;
@@ -729,58 +918,105 @@ int dev_cb_pcidas_device_intable(struct pci_dev *pcidev)
 
 static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
 {
-  int io_base, i, ret, board_idx = -1;
-  struct list_head *this;
-  struct cb_pcidas_struct *cb = NULL;
-  struct cb_pcidas_board *board = NULL;
-  struct a4l_subdevice *subd = NULL;
-
-  printk("analogy_cb_pcidas: attach\n");
-  if (arg->opts == NULL || arg->opts_size < sizeof(unsigned long)) {
-    a4l_info(dev,"dev_cb_pcidas_attach: no options specified\n");
-    io_base = 0;
-  } else {
-    io_base = ((unsigned long *)arg->opts)[0];
-    a4l_info(dev,"dev_cb_pcidas_attach: option provided = %d\n",io_base);
-  }
-  /* Find PCI device from list created in probe */
-  list_for_each(this, &cb_pcidas_devices) {
-    cb = list_entry(this, struct cb_pcidas_struct, list);
-    /* Test if device is within device table */
-    if ((board_idx = dev_cb_pcidas_device_intable(cb->pcidev)) >= 0) {
-      break;
+    int io_base, board_idx = -1;
+    struct list_head *this;
+    struct cb_pcidas_struct *cb = NULL;
+    struct cb_pcidas_board *thisboard = NULL;
+    struct a4l_subdevice *subd = NULL;
+    
+    printk("analogy_cb_pcidas: attach\n");
+    if (arg->opts == NULL || arg->opts_size < sizeof(unsigned long)) {
+	a4l_info(dev,"dev_cb_pcidas_attach: no options specified\n");
+	io_base = 0;
+    } else {
+	io_base = ((unsigned long *)arg->opts)[0];
+	a4l_info(dev,"dev_cb_pcidas_attach: option provided = %d\n",io_base);
     }
-  }
-  if (board_idx < 0) {
-    a4l_err(dev,"Device 0x04x not found in device table\n",cb->pcidev->device);
-    return -EIO;
-  }
+    /* Find PCI device from list created in probe */
+    list_for_each(this, &cb_pcidas_devices) {
+	cb = list_entry(this, struct cb_pcidas_struct, list);
+	/* Test if device is within device table */
+	if ((board_idx = dev_cb_pcidas_device_intable(cb->pcidev)) >= 0) {
+	    break;
+	}
+    }
+    if (board_idx < 0) {
+	a4l_err(dev,"Device 0x%04x not found in device table\n",cb->pcidev->device);
+	return -EIO;
+    }
+    
+    devpriv->cb = cb;
+    devpriv->board = thisboard = &cb_pcidas_boards[board_idx];
+    
+    a4l_info(dev,"Trying to attach %s\n",devpriv->board->name);
+    
+    /* Request all regions of PCI device */
+    if (pci_request_regions(cb->pcidev,"cb_pcidas") != 0) {
+	a4l_err(dev,"dev_cb_pcidas_attach: unable to request PCI region\n");
+	return -EIO;
+    }
+    
+    /* Fill private data struct */
+    devpriv->s5933_config = pci_resource_start(cb->pcidev, 0);
+    devpriv->control_status = pci_resource_start(cb->pcidev, 1);
+    devpriv->adc_fifo = pci_resource_start(cb->pcidev, 2);
+    devpriv->pacer_counter_dio = pci_resource_start(cb->pcidev, 3);
+    if (thisboard->ao_nchan) {
+	devpriv->ao_registers = pci_resource_start(cb->pcidev, 4);
+    }
 
-  devpriv->cb = cb;
-  devpriv->board = &cb_pcidas_boards[board_idx];
+    /* Setup interrupts */
+    /*  disable and clear interrupts on amcc s5933 */
+    outl(INTCSR_INBOX_INTR_STATUS,
+	 devpriv->s5933_config + AMCC_OP_REG_INTCSR);
+    if(a4l_request_irq(dev,
+		       cb->pcidev->irq,
+		       cb_pcidas_interrupt,
+		       RTDM_IRQTYPE_SHARED,
+		     dev)) {
+	a4l_err(dev,"unable to allocate irq %d\n",cb->pcidev->irq);
+	return -EINVAL;
+    }
+    
+    /* Allocat and add AO subdevice */
+    subd = a4l_alloc_subd(0,NULL);
+    if (subd == NULL) {
+	return -ENOMEM;
+    }
+    if (thisboard->ao_nchan) {
+	a4l_info(dev," attaching AO subdevice\n");
+      	subd->flags = A4L_SUBD_AO | A4L_SUBD_CMD;
+	subd->chan_desc = kmalloc(sizeof(struct a4l_channels_desc) +
+				  sizeof(struct a4l_channel), GFP_KERNEL);
+	subd->chan_desc->mode = A4L_CHAN_GLOBAL_CHANDESC;
+	subd->chan_desc->length = thisboard->ao_nchan;
+	subd->chan_desc->chans[0].flags = A4L_CHAN_AREF_GROUND | A4L_CHAN_AREF_DIFF;
+	subd->chan_desc->chans[0].nb_bits = thisboard->ao_bits;
+	
+	subd->rng_desc = thisboard->ranges_ao;
 
-  a4l_info(dev,"Trying to attach %s\n",devpriv->board->name);
-
-  /* Request all regions of PCI device */
-  if (pci_request_regions(cb->pcidev,"cb_pcidas") != 0) {
-    a4l_err(dev,"dev_cb_pcidas_attach: unable to request PCI region\n");
-    return -EIO;
-  }
-
-  subd = a4l_alloc_subd(setup_subds[0].sizeof_priv,
-			setup_subds[0].setup_func);
-  if (subd == NULL) {
-    return -ENOMEM;
-  }
-  if (a4l_add_subd(dev,subd) < 0) {
-    return -1;
-  }
-
-  /* Assign driver? */
-  dev->driver->driver_name = devpriv->board->name;
-
-  a4l_info(dev,"Attach finished\n");
-  return 0;
+	//subd->insn_write = s526_ao_winsn;
+	//subd->insn_read = s526_ao_rinsn;
+    }
+    if (a4l_add_subd(dev,subd) < 0) {
+	return -1;
+    }
+    
+    /* Allocate and DIO subdevice */
+    subd = a4l_alloc_subd(setup_subds[0].sizeof_priv,
+			  setup_subds[0].setup_func);
+    if (subd == NULL) {
+	return -ENOMEM;
+    }
+    if (a4l_add_subd(dev,subd) < 0) {
+	return -1;
+    }
+    
+    /* Assign driver? */
+    dev->driver->driver_name = devpriv->board->name;
+    
+    a4l_info(dev,"Attach finished\n");
+    return 0;
 }
 
 static int dev_cb_pcidas_detach(struct a4l_device *dev)
