@@ -584,7 +584,7 @@ static int cb_pcidas_ao_fifo_winsn(struct a4l_subdevice *subd,
 				 DAC_CHAN_EN(chan) | DAC_START);
     outw(devpriv->ao_control_bits, devpriv->control_status + DAC_CSR);
     rtdm_lock_put_irqrestore(&dev->lock, flags);
-    
+    a4l_info(dev,"ao_control_bits 0x%04x\n",devpriv->ao_control_bits);   
     /* remember value for readback */
     //devpriv->ao_value[chan] = data[0];
     
@@ -592,6 +592,91 @@ static int cb_pcidas_ao_fifo_winsn(struct a4l_subdevice *subd,
     outw(data[0], devpriv->ao_registers + DACDATA);
     
     return insn->data_size;
+}
+
+static int cb_pcidas_ai_rinsn(struct a4l_subdevice *subd,
+			      struct a4l_kernel_instruction *insn)
+{
+  struct a4l_device *dev = subd->dev;	
+  unsigned int chan = CR_CHAN(insn->chan_desc);
+  unsigned int range = CR_RNG(insn->chan_desc);
+  unsigned int aref = CR_AREF(insn->chan_desc);
+  uint16_t *data = (uint16_t *)insn->data;
+  unsigned int bits;
+  int n, i;
+
+	/* enable calibration input if appropriate */
+#if 0
+	if (insn->chanspec & CR_ALT_SOURCE) {
+		outw(cal_enable_bits(dev),
+		     devpriv->control_status + CALIBRATION_REG);
+		chan = 0;
+	} else {
+		outw(0, devpriv->control_status + CALIBRATION_REG);
+	}
+#endif
+	/* set mux limits and gain */
+	bits = BEGIN_SCAN(chan) | END_SCAN(chan) | GAIN_BITS(range);
+	/* set unipolar/bipolar */
+	if (range & IS_UNIPOLAR)
+		bits |= UNIP;
+	/* set single-ended/differential */
+	if (aref != AREF_DIFF)
+		bits |= SE;
+	outw(bits, devpriv->control_status + ADCMUX_CONT);
+
+	/* clear fifo */
+	outw(0, devpriv->adc_fifo + ADCFIFOCLR);
+	printk("bits=0x%04x data_size=%d\n",bits,insn->data_size);
+	/* convert n samples */
+	for (n = 0; n < insn->data_size; n++) {
+		/* trigger conversion */
+		outw(0, devpriv->adc_fifo + ADCDATA);
+
+		/* wait for conversion to end */
+		/* return -ETIMEDOUT if there is a timeout */
+		for (i = 0; i < 10000; i++) {
+			if (inw(devpriv->control_status + ADCMUX_CONT) & EOC)
+				break;
+		}
+		if (i == 10000)
+			return -ETIMEDOUT;
+
+		/* read data */
+		data[n] = inw(devpriv->adc_fifo + ADCDATA);
+		printk("data[%d]=0x%04x\n",n,data[n]);
+	}
+
+	/* return the number of samples read/written */
+	return n;
+}
+
+static int cb_pcidas_ai_config_insn(struct a4l_subdevice *subd,
+			  struct a4l_kernel_instruction *insn)
+{
+  struct a4l_device *dev = subd->dev;	
+
+  int *data = (int *)insn->data;
+  int id = data[0];
+  unsigned int source = data[1];
+#if 0
+	switch (id) {
+	case INSN_CONFIG_ALT_SOURCE:
+		if (source >= 8) {
+			dev_err(dev->class_dev,
+				"invalid calibration source: %i\n",
+				source);
+			return -EINVAL;
+		}
+		devpriv->calibration_source = source;
+		break;
+	default:
+		return -EINVAL;
+		break;
+	}
+	return insn->n;
+#endif
+	return 0;
 }
 
 static int cb_pcidas_dio_insn_config(struct a4l_subdevice *subd, struct a4l_kernel_instruction *insn)
@@ -998,7 +1083,7 @@ static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
 
     /* Setup interrupts */
     /*  disable and clear interrupts on amcc s5933 */
-    outl(INTCSR_INBOX_INTR_STATUS,
+    /*outl(INTCSR_INBOX_INTR_STATUS,
 	 devpriv->s5933_config + AMCC_OP_REG_INTCSR);
     if(a4l_request_irq(dev,
 		       cb->pcidev->irq,
@@ -1007,8 +1092,9 @@ static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
 		     dev)) {
 	a4l_err(dev,"unable to allocate irq %d\n",cb->pcidev->irq);
 	return -EINVAL;
-    }
-    
+	}*/
+    a4l_info(dev,"allocated irq %d\n",cb->pcidev->irq);
+
     /* Allocate and add AO subdevice */
     subd = a4l_alloc_subd(0,NULL);
     if (subd == NULL) {
@@ -1034,6 +1120,32 @@ static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
 	a4l_info(dev,"registering AO subdevice failed\n");
     }
     a4l_info(dev,"registered AO subdevice\n");
+
+    /* Allocate and add AI subdevice */
+    subd = a4l_alloc_subd(0,NULL);
+    if (subd == NULL) {
+	return -ENOMEM;
+    }
+    a4l_info(dev," attaching AI subdevice...");
+    subd->flags = A4L_SUBD_AI | A4L_SUBD_CMD;
+    subd->chan_desc = kmalloc(sizeof(struct a4l_channels_desc) +
+			      sizeof(struct a4l_channel), GFP_KERNEL);
+    subd->chan_desc->mode = A4L_CHAN_GLOBAL_CHANDESC;
+    subd->chan_desc->length = thisboard->ai_nchan;
+    subd->chan_desc->chans[0].flags = A4L_CHAN_AREF_GROUND | A4L_CHAN_AREF_DIFF;
+    subd->chan_desc->chans[0].nb_bits = thisboard->ai_bits;
+    
+    subd->rng_desc = thisboard->ranges_ai;    
+
+    /* Callbacks */
+    subd->insn_write = cb_pcidas_ai_rinsn;
+    subd->insn_config = cb_pcidas_ai_config_insn;    
+
+    if (a4l_add_subd(dev,subd) < 0) {
+	a4l_info(dev,"registering AI subdevice failed\n");
+	return -1;
+    }
+    a4l_info(dev,"registered AI subdevice\n");
     
     /* Allocate and DIO subdevice */
     subd = a4l_alloc_subd(setup_subds[0].sizeof_priv,
@@ -1063,7 +1175,7 @@ static int dev_cb_pcidas_detach(struct a4l_device *dev)
 	  pci_release_regions(devpriv->cb->pcidev);
 	}
 	if (devpriv->cb->pcidev->irq) {
-	    a4l_free_irq(dev,devpriv->cb->pcidev->irq);
+	  //a4l_free_irq(dev,devpriv->cb->pcidev->irq);
 	}
 	dev->driver->driver_name = NULL;
 	a4l_info(dev,"dev_cb_pcidas_detach: pci_release_regions\n");
