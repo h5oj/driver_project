@@ -563,6 +563,37 @@ static int s526_ao_rinsn(struct a4l_subdevice *subd, struct a4l_kernel_instructi
 }
 #endif
 
+/* analog output insn for pcidas-1602 series */
+static int cb_pcidas_ao_fifo_winsn(struct a4l_subdevice *subd,
+				   struct a4l_kernel_instruction *insn)
+{
+    struct a4l_device *dev = subd->dev;	
+    unsigned int chan = CR_CHAN(insn->chan_desc);
+    unsigned int range = CR_RNG(insn->chan_desc);
+    uint16_t *data = (uint16_t *)insn->data;
+    unsigned long flags;
+
+    /* clear dac fifo */
+    outw(0, devpriv->ao_registers + DACFIFOCLR);
+    
+    /* set channel and range */
+    rtdm_lock_get_irqsave(&dev->lock, flags);
+    devpriv->ao_control_bits &= (~DAC_CHAN_EN(0) & ~DAC_CHAN_EN(1) &
+				 ~DAC_RANGE_MASK(chan) & ~DAC_PACER_MASK);
+    devpriv->ao_control_bits |= (DACEN | DAC_RANGE(chan, range) |
+				 DAC_CHAN_EN(chan) | DAC_START);
+    outw(devpriv->ao_control_bits, devpriv->control_status + DAC_CSR);
+    rtdm_lock_put_irqrestore(&dev->lock, flags);
+    
+    /* remember value for readback */
+    //devpriv->ao_value[chan] = data[0];
+    
+    /* send data */
+    outw(data[0], devpriv->ao_registers + DACDATA);
+    
+    return insn->data_size;
+}
+
 static int cb_pcidas_dio_insn_config(struct a4l_subdevice *subd, struct a4l_kernel_instruction *insn)
 {
 	struct a4l_device *dev = subd->dev;
@@ -978,13 +1009,13 @@ static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
 	return -EINVAL;
     }
     
-    /* Allocat and add AO subdevice */
+    /* Allocate and add AO subdevice */
     subd = a4l_alloc_subd(0,NULL);
     if (subd == NULL) {
 	return -ENOMEM;
     }
     if (thisboard->ao_nchan) {
-	a4l_info(dev," attaching AO subdevice\n");
+	a4l_info(dev," attaching AO subdevice...");
       	subd->flags = A4L_SUBD_AO | A4L_SUBD_CMD;
 	subd->chan_desc = kmalloc(sizeof(struct a4l_channels_desc) +
 				  sizeof(struct a4l_channel), GFP_KERNEL);
@@ -995,12 +1026,14 @@ static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
 	
 	subd->rng_desc = thisboard->ranges_ao;
 
-	//subd->insn_write = s526_ao_winsn;
-	//subd->insn_read = s526_ao_rinsn;
+	/* Callbacks */
+	subd->insn_write = cb_pcidas_ao_fifo_winsn;
     }
     if (a4l_add_subd(dev,subd) < 0) {
 	return -1;
+	a4l_info(dev,"registering AO subdevice failed\n");
     }
+    a4l_info(dev,"registered AO subdevice\n");
     
     /* Allocate and DIO subdevice */
     subd = a4l_alloc_subd(setup_subds[0].sizeof_priv,
@@ -1023,9 +1056,15 @@ static int dev_cb_pcidas_detach(struct a4l_device *dev)
 {
 	int err = 0;	
 	if (devpriv->cb != NULL) {
+	    if (devpriv->s5933_config) {
+			outl(INTCSR_INBOX_INTR_STATUS,
+			     devpriv->s5933_config + AMCC_OP_REG_INTCSR);
+	    }
 	  pci_release_regions(devpriv->cb->pcidev);
 	}
-
+	if (devpriv->cb->pcidev->irq) {
+	    a4l_free_irq(dev,devpriv->cb->pcidev->irq);
+	}
 	dev->driver->driver_name = NULL;
 	a4l_info(dev,"dev_cb_pcidas_detach: pci_release_regions\n");
 	return err;
