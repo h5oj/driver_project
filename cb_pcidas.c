@@ -584,7 +584,9 @@ static int cb_pcidas_ao_fifo_winsn(struct a4l_subdevice *subd,
 				 DAC_CHAN_EN(chan) | DAC_START);
     outw(devpriv->ao_control_bits, devpriv->control_status + DAC_CSR);
     rtdm_lock_put_irqrestore(&dev->lock, flags);
+#ifdef DEBUG_PRINT
     a4l_info(dev,"ao_control_bits 0x%04x\n",devpriv->ao_control_bits);   
+#endif
     /* remember value for readback */
     //devpriv->ao_value[chan] = data[0];
     
@@ -604,7 +606,9 @@ static int cb_pcidas_ai_rinsn(struct a4l_subdevice *subd,
   uint16_t *data = (uint16_t *)insn->data;
   unsigned int bits;
   int n, i;
-
+#ifdef DEBUG_PRINT
+  printk("insn->chan->desc=0x%04x\n",insn->chan_desc);
+#endif
 	/* enable calibration input if appropriate */
 #if 0
 	if (insn->chanspec & CR_ALT_SOURCE) {
@@ -627,9 +631,11 @@ static int cb_pcidas_ai_rinsn(struct a4l_subdevice *subd,
 
 	/* clear fifo */
 	outw(0, devpriv->adc_fifo + ADCFIFOCLR);
+#ifdef DEBUG_PRINT
 	printk("bits=0x%04x data_size=%d\n",bits,insn->data_size);
+#endif
 	/* convert n samples */
-	for (n = 0; n < insn->data_size; n++) {
+	for (n = 0; n < insn->data_size/sizeof(uint16_t); n++) {
 		/* trigger conversion */
 		outw(0, devpriv->adc_fifo + ADCDATA);
 
@@ -639,12 +645,14 @@ static int cb_pcidas_ai_rinsn(struct a4l_subdevice *subd,
 			if (inw(devpriv->control_status + ADCMUX_CONT) & EOC)
 				break;
 		}
-		if (i == 10000)
-			return -ETIMEDOUT;
-
+		if (i == 10000) {
+		  return -ETIMEDOUT;
+		}
 		/* read data */
 		data[n] = inw(devpriv->adc_fifo + ADCDATA);
+#ifdef DEBUG_PRINT
 		printk("data[%d]=0x%04x\n",n,data[n]);
+#endif
 	}
 
 	/* return the number of samples read/written */
@@ -654,11 +662,11 @@ static int cb_pcidas_ai_rinsn(struct a4l_subdevice *subd,
 static int cb_pcidas_ai_config_insn(struct a4l_subdevice *subd,
 			  struct a4l_kernel_instruction *insn)
 {
-  struct a4l_device *dev = subd->dev;	
+  //struct a4l_device *dev = subd->dev;	
 
-  int *data = (int *)insn->data;
-  int id = data[0];
-  unsigned int source = data[1];
+  //int *data = (int *)insn->data;
+  //int id = data[0];
+  //unsigned int source = data[1];
 #if 0
 	switch (id) {
 	case INSN_CONFIG_ALT_SOURCE:
@@ -1138,7 +1146,7 @@ static int dev_cb_pcidas_attach(struct a4l_device *dev, a4l_lnkdesc_t *arg)
     subd->rng_desc = thisboard->ranges_ai;    
 
     /* Callbacks */
-    subd->insn_write = cb_pcidas_ai_rinsn;
+    subd->insn_read = cb_pcidas_ai_rinsn;
     subd->insn_config = cb_pcidas_ai_config_insn;    
 
     if (a4l_add_subd(dev,subd) < 0) {
